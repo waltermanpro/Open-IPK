@@ -4,14 +4,37 @@ on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: "OpenWrt version, e.g. 25.12.5 or 24.10.12"
+        description: "选择 OpenWrt 版本"
         required: true
+        type: choice
         default: "25.12.5"
+        options:
+          # OpenWrt 25.12
+          - "25.12.5"
+          - "25.12.4"
+          - "25.12.3"
+          - "25.12.2"
+          - "25.12.1"
+          - "25.12.0"
+
+          # OpenWrt 24.10
+          - "24.10.8"
+          - "24.10.7"
+          - "24.10.6"
+          - "24.10.5"
+          - "24.10.4"
+          - "24.10.3"
+          - "24.10.2"
+          - "24.10.1"
+          - "24.10.0"
 
       openclash_branch:
-        description: "OpenClash branch"
+        description: "OpenClash 分支"
         required: true
+        type: choice
         default: "master"
+        options:
+          - "master"
 
 jobs:
   build:
@@ -26,6 +49,9 @@ jobs:
 
     steps:
 
+      # ============================================================
+      # 1. 安装编译环境
+      # ============================================================
       - name: Install dependencies
         run: |
           set -eux
@@ -51,6 +77,9 @@ jobs:
             file \
             npm
 
+      # ============================================================
+      # 2. 下载对应版本 OpenWrt SDK
+      # ============================================================
       - name: Download OpenWrt SDK
         shell: bash
         run: |
@@ -63,9 +92,11 @@ jobs:
           echo "Target          : ${OPENWRT_TARGET}"
           echo "=========================================="
 
+          # 下载官方 SHA256 文件
           wget -qO sdk.sha256 \
             "${BASE_URL}/sha256sums"
 
+          # 自动寻找 SDK
           SDK=$(awk '
             $2 ~ /^\.\/openwrt-sdk-.*Linux-x86_64\.tar\.zst$/ {
               sub(/^.\//, "", $2)
@@ -75,13 +106,30 @@ jobs:
           ' sdk.sha256)
 
           if [ -z "${SDK}" ]; then
-            echo "ERROR: SDK not found!"
+            echo "=========================================="
+            echo "ERROR: 找不到 OpenWrt SDK"
+            echo "=========================================="
+
+            echo
+            echo "当前版本:"
+            echo "${OPENWRT_VERSION}"
+
+            echo
+            echo "Target:"
+            echo "${OPENWRT_TARGET}"
+
+            echo
+            echo "可用 SDK:"
             grep 'openwrt-sdk-.*tar.zst' sdk.sha256 || true
+
             exit 1
           fi
 
-          echo "SDK: ${SDK}"
+          echo
+          echo "SDK:"
+          echo "${SDK}"
 
+          # 下载 SDK
           wget \
             --retry-connrefused \
             --tries=5 \
@@ -89,19 +137,34 @@ jobs:
             -O sdk.tar.zst \
             "${BASE_URL}/${SDK}"
 
+          # ========================================================
+          # SHA256 校验
+          # ========================================================
+
           EXPECTED=$(grep " ${SDK}$" sdk.sha256 | awk '{print $1}')
+
           ACTUAL=$(sha256sum sdk.tar.zst | awk '{print $1}')
 
-          echo "Expected SHA256: ${EXPECTED}"
-          echo "Actual SHA256:   ${ACTUAL}"
+          echo
+          echo "Expected SHA256:"
+          echo "${EXPECTED}"
+
+          echo
+          echo "Actual SHA256:"
+          echo "${ACTUAL}"
 
           if [ "${EXPECTED}" != "${ACTUAL}" ]; then
-            echo "ERROR: SHA256 mismatch!"
+            echo
+            echo "ERROR: SHA256 校验失败!"
             exit 1
           fi
 
+          echo
           echo "SHA256 verification OK."
 
+      # ============================================================
+      # 3. 解压 SDK
+      # ============================================================
       - name: Extract SDK
         run: |
           set -eux
@@ -114,8 +177,13 @@ jobs:
             -C sdk \
             --strip-components=1
 
+          echo
+          echo "SDK:"
           ls -lah sdk
 
+      # ============================================================
+      # 4. 下载 OpenClash
+      # ============================================================
       - name: Clone OpenClash
         run: |
           set -eux
@@ -126,13 +194,18 @@ jobs:
             https://github.com/vernesong/OpenClash.git \
             openclash
 
+          echo
           echo "OpenClash version:"
           grep '^PKG_VERSION:=' \
             openclash/luci-app-openclash/Makefile || true
 
+          echo
           echo "OpenClash commit:"
           git -C openclash rev-parse --short HEAD
 
+      # ============================================================
+      # 5. 复制 OpenClash
+      # ============================================================
       - name: Copy OpenClash package
         run: |
           set -eux
@@ -143,6 +216,9 @@ jobs:
             openclash/luci-app-openclash/. \
             sdk/package/luci-app-openclash/
 
+      # ============================================================
+      # 6. 编译 po2lmo
+      # ============================================================
       - name: Build po2lmo
         working-directory: sdk/package/luci-app-openclash/tools/po2lmo
         run: |
@@ -155,8 +231,13 @@ jobs:
             po2lmo \
             /usr/local/bin/po2lmo
 
+          echo
+          echo "po2lmo:"
           command -v po2lmo
 
+      # ============================================================
+      # 7. 编译 CodeMirror 6
+      # ============================================================
       - name: Build CodeMirror 6
         working-directory: sdk/package/luci-app-openclash/tools/codemirror
         run: |
@@ -177,6 +258,9 @@ jobs:
 
           rm -rf node_modules
 
+      # ============================================================
+      # 8. SDK 配置
+      # ============================================================
       - name: SDK defconfig
         working-directory: sdk
         run: |
@@ -184,6 +268,9 @@ jobs:
 
           make defconfig
 
+      # ============================================================
+      # 9. 编译 OpenClash
+      # ============================================================
       - name: Build OpenClash
         working-directory: sdk
         run: |
@@ -193,6 +280,9 @@ jobs:
             package/luci-app-openclash/luci-app-openclash/compile \
             V=s
 
+      # ============================================================
+      # 10. 查找 IPK
+      # ============================================================
       - name: Find IPK
         run: |
           set -eux
@@ -212,10 +302,14 @@ jobs:
             | wc -l)
 
           if [ "${COUNT}" -eq 0 ]; then
-            echo "ERROR: No IPK generated!"
+            echo
+            echo "ERROR: 没有生成 IPK!"
             exit 1
           fi
 
+      # ============================================================
+      # 11. 收集 IPK
+      # ============================================================
       - name: Collect IPK
         run: |
           set -eux
@@ -227,8 +321,16 @@ jobs:
             -name 'luci-app-openclash_*.ipk' \
             -exec cp -v {} output/ \;
 
+          echo
+          echo "=========================================="
+          echo "最终 IPK"
+          echo "=========================================="
+
           ls -lh output
 
+      # ============================================================
+      # 12. 上传 Artifact
+      # ============================================================
       - name: Upload IPK
         uses: actions/upload-artifact@v4
         with:
