@@ -1,16 +1,11 @@
-name: Sync OpenClash Release
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
 jobs:
   sync-openclash:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Get latest OpenClash release
         id: release
         run: |
@@ -26,85 +21,3 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
           echo "Latest OpenClash release: $TAG"
-
-      - name: Download APK and IPK
-        run: |
-          set -euo pipefail
-
-          mkdir -p openclash
-
-          API="https://api.github.com/repos/vernesong/OpenClash/releases/latest"
-
-          curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
-            "$API" \
-            -o release.json
-
-          jq -r '
-            .assets[]
-            | select(
-                (.name | test("^luci-app-openclash.*\\.apk$"))
-                or
-                (.name | test("^luci-app-openclash.*\\.ipk$"))
-              )
-            | .browser_download_url
-          ' release.json > urls.txt
-
-          echo "Download URLs:"
-          cat urls.txt
-
-          while read -r URL; do
-            curl -fL \
-              -o "openclash/$(basename "$URL")" \
-              "$URL"
-          done < urls.txt
-
-          echo "Downloaded files:"
-          ls -lh openclash/
-
-      - name: Verify packages
-        run: |
-          set -euo pipefail
-
-          APK=$(find openclash -type f -name '*.apk' | head -n1)
-          IPK=$(find openclash -type f -name '*.ipk' | head -n1)
-
-          if [[ -z "$APK" ]]; then
-            echo "ERROR: APK not found"
-            exit 1
-          fi
-
-          if [[ -z "$IPK" ]]; then
-            echo "ERROR: IPK not found"
-            exit 1
-          fi
-
-          echo "APK: $APK"
-          echo "IPK: $IPK"
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euo pipefail
-
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists."
-          else
-            gh release create "$TAG" \
-              --title "OpenClash $TAG" \
-              --notes "OpenClash packages synchronized manually."
-          fi
-
-      - name: Upload APK and IPK
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euo pipefail
-
-          gh release upload "$TAG" \
-            openclash/*.apk \
-            openclash/*.ipk \
-            --clobber
