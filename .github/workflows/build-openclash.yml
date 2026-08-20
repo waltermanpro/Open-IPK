@@ -1,23 +1,222 @@
+name: Sync OpenClash Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   sync-openclash:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
 
+      # ============================================================
+      # 1. 获取 OpenClash 最新 Release
+      # ============================================================
       - name: Get latest OpenClash release
         id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           API="https://api.github.com/repos/vernesong/OpenClash/releases/latest"
 
-          TAG=$(curl -fsSL \
+          echo "Getting latest OpenClash release..."
+
+          curl -fsSL \
             -H "Accept: application/vnd.github+json" \
-            "$API" |
-            jq -r '.tag_name')
+            "$API" \
+            -o release.json
+
+          TAG=$(jq -r '.tag_name' release.json)
+
+          if [[ -z "$TAG" || "$TAG" == "null" ]]; then
+            echo "ERROR: Failed to get OpenClash release tag."
+            exit 1
+          fi
+
+          echo "OpenClash latest release: $TAG"
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-          echo "Latest OpenClash release: $TAG"
+
+      # ============================================================
+      # 2. 下载 APK 和 IPK
+      # ============================================================
+      - name: Download OpenClash APK and IPK
+        run: |
+          set -euo pipefail
+
+          mkdir -p openclash
+
+          echo "Finding OpenClash APK/IPK..."
+
+          # APK
+          APK_URL=$(jq -r '
+            .assets[]
+            | select(
+                .name
+                | test("^luci-app-openclash.*\\.apk$")
+              )
+            | .browser_download_url
+          ' release.json | head -n1)
+
+          # IPK
+          IPK_URL=$(jq -r '
+            .assets[]
+            | select(
+                .name
+                | test("^luci-app-openclash.*\\.ipk$")
+              )
+            | .browser_download_url
+          ' release.json | head -n1)
+
+          echo "APK URL:"
+          echo "$APK_URL"
+
+          echo "IPK URL:"
+          echo "$IPK_URL"
+
+          # 检查 APK
+          if [[ -z "$APK_URL" || "$APK_URL" == "null" ]]; then
+            echo "ERROR: OpenClash APK not found."
+            exit 1
+          fi
+
+          # 检查 IPK
+          if [[ -z "$IPK_URL" || "$IPK_URL" == "null" ]]; then
+            echo "ERROR: OpenClash IPK not found."
+            exit 1
+          fi
+
+          # 下载 APK
+          echo "Downloading APK..."
+
+          curl -fL \
+            -o "openclash/$(basename "$APK_URL")" \
+            "$APK_URL"
+
+          # 下载 IPK
+          echo "Downloading IPK..."
+
+          curl -fL \
+            -o "openclash/$(basename "$IPK_URL")" \
+            "$IPK_URL"
+
+          echo ""
+          echo "Downloaded files:"
+          ls -lh openclash/
+
+
+      # ============================================================
+      # 3. 验证文件
+      # ============================================================
+      - name: Verify packages
+        run: |
+          set -euo pipefail
+
+          APK=$(find openclash -type f -name '*.apk' | head -n1)
+          IPK=$(find openclash -type f -name '*.ipk' | head -n1)
+
+          if [[ -z "$APK" ]]; then
+            echo "ERROR: APK file not found."
+            exit 1
+          fi
+
+          if [[ -z "$IPK" ]]; then
+            echo "ERROR: IPK file not found."
+            exit 1
+          fi
+
+          echo "APK:"
+          echo "$APK"
+
+          echo ""
+          echo "IPK:"
+          echo "$IPK"
+
+          echo ""
+          echo "File sizes:"
+          ls -lh "$APK" "$IPK"
+
+
+      # ============================================================
+      # 4. 创建 Release
+      # ============================================================
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          echo "Target repository: $REPO"
+          echo "Target release: $TAG"
+
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+
+            echo "Release $TAG already exists."
+
+          else
+
+            echo "Creating release $TAG..."
+
+            gh release create "$TAG" \
+              --repo "$REPO" \
+              --title "OpenClash $TAG" \
+              --notes "OpenClash packages synchronized from the official OpenClash release.
+
+          Source:
+          https://github.com/vernesong/OpenClash
+
+          This release contains:
+          - luci-app-openclash APK
+          - luci-app-openclash IPK"
+
+          fi
+
+
+      # ============================================================
+      # 5. 上传 APK 和 IPK
+      # ============================================================
+      - name: Upload APK and IPK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          echo "Uploading packages..."
+
+          gh release upload "$TAG" \
+            --repo "$REPO" \
+            openclash/*.apk \
+            openclash/*.ipk \
+            --clobber
+
+          echo ""
+          echo "Upload completed."
+
+
+      # ============================================================
+      # 6. 显示最终 Release
+      # ============================================================
+      - name: Show release information
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo "OpenClash Release synchronization complete"
+          echo "=========================================="
+
+          gh release view "$TAG" \
+            --repo "$REPO"
